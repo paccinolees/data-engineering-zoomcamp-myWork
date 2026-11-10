@@ -1,0 +1,77 @@
+docker run -it --rm \
+--network=pipeline_default \
+taxi_ingest:v001 \
+  --pg-user=root \
+  --pg-pass=root \
+  --pg-host=pgdatabase \
+  --pg-port=5432 \
+  --pg-db=ny_taxi \
+  --target-table=yellow_taxi_trips \
+  --chunk-size=100000
+
+docker run -it --rm \
+  -e POSTGRES_USER="root" \
+  -e POSTGRES_PASSWORD="root" \
+  -e POSTGRES_DB="ny_taxi" \
+  -v ny_taxi_postgres_data:/var/lib/postgresql \
+  -p 5432:5432 \
+  --network=pg-network \
+  --name pgdatabase \
+  postgres:18
+//
+  docker run -it --rm \
+  -e POSTGRES_USER="root" \
+  -e POSTGRES_PASSWORD="root" \
+  -e POSTGRES_DB="ny_taxi" \
+  -v ny_taxi_postgres_data:/var/lib/postgresql \
+  -p 5432:5432 \
+  --name pgdatabase \
+  postgres:18
+//
+docker run -it \
+  -e PGADMIN_DEFAULT_EMAIL="admin@admin.com" \
+  -e PGADMIN_DEFAULT_PASSWORD="root" \
+  -v pgadmin_data:/var/lib/pgadmin \
+  -p 8085:80 \
+  --network=pg-network \
+  --name pgadmin \
+  dpage/pgadmin4
+
+  #fix network connection issue(eg. pgadmin cant connect(timed out) with pgdatabase etc.)
+  docker compose ps
+  
+  pgadmin_id=$(docker compose ps -q pgadmin)
+  network=$(docker inspect "$pgadmin_id" \
+    --format '{{range $name, $net := .NetworkSettings.Networks}}{{println $name}}{{end}}' |
+    head -n1)
+  bridge="br-$(docker network inspect --format '{{.Id}}' "$network" | cut -c1-12)"
+
+  echo "Compose network: $network; bridge: $bridge"
+
+  docker run --rm --network="$network" postgres:18 \
+    pg_isready -h pgdatabase -p 5432 -U root -d ny_taxi -t 3
+
+  sudo iptables-legacy -C FORWARD \
+    -i "$bridge" -o "$bridge" -j ACCEPT 2>/dev/null ||
+  sudo iptables-legacy -I FORWARD 1 \
+    -i "$bridge" -o "$bridge" -j ACCEPT
+
+  docker run --rm --network="$network" postgres:18 \
+    pg_isready -h pgdatabase -p 5432 -U root -d ny_taxi -t 3
+
+#Fix network connection issue for ingestion container to connect to pg
+network=pipeline_default
+bridge="br-$(docker network inspect --format '{{.Id}}' "$network" | cut -c1-12)"
+dns=168.63.129.16
+
+sudo iptables-legacy -C FORWARD -i "$bridge" -o "$bridge" -j ACCEPT 2>/dev/null ||
+  sudo iptables-legacy -I FORWARD 1 -i "$bridge" -o "$bridge" -j ACCEPT
+
+sudo iptables-legacy -C FORWARD -i "$bridge" -d "$dns" -p udp --dport 53 -j ACCEPT 2>/dev/null ||
+  sudo iptables-legacy -I FORWARD 1 -i "$bridge" -d "$dns" -p udp --dport 53 -j ACCEPT
+
+sudo iptables-legacy -C FORWARD -i "$bridge" -p tcp --dport 443 -j ACCEPT 2>/dev/null ||
+  sudo iptables-legacy -I FORWARD 1 -i "$bridge" -p tcp --dport 443 -j ACCEPT
+
+sudo iptables-legacy -C FORWARD -o "$bridge" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null ||
+  sudo iptables-legacy -I FORWARD 1 -o "$bridge" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
